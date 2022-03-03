@@ -7,6 +7,7 @@ import (
 	"github.com/fatih/color"
 	"io/ioutil"
 	"log"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -19,13 +20,14 @@ import (
 	"github.com/andybalholm/brotli"
 
 	http "github.com/Carcraftz/fhttp"
-
 	tls "github.com/Carcraftz/utls"
+	screen "github.com/inancgumus/screen"
 )
 
 //var client http.Client
 
 func main() {
+	screen.Clear()
 	port := flag.String("port", "8082", "A port number (default 8082)")
 	flag.Parse()
 	fmt.Println("Hosting a TLS API on port " + *port)
@@ -202,11 +204,16 @@ func handleReq(w http.ResponseWriter, r *http.Request) {
 
 	//req.Close = true
 
+	var re = regexp.MustCompile(`(domain|SameSite|Secure|path)(=)?(.+?;)`)  //cleaning up cookie vals
 	//forward response headers
 	for k, v := range resp.Header {
 		if k != "Content-Length" && k != "Content-Encoding" {
 			for _, kv := range v {
-				w.Header().Add(k, kv)
+				if k == "Set-Cookie"{
+					// httpx was giving me issues, for some reason this works, even though the regex doesn't really work
+					kv = re.ReplaceAllString(kv, ``)
+				}
+				w.Header().Add(strings.Title(k), kv)
 			}
 		}
 	}
