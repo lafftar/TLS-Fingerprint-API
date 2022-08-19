@@ -7,7 +7,6 @@ import (
 	"github.com/fatih/color"
 	"io/ioutil"
 	"log"
-	"regexp"
 	"strconv"
 	"time"
 
@@ -18,16 +17,16 @@ import (
 
 	"github.com/Carcraftz/cclient"
 	"github.com/andybalholm/brotli"
+	"github.com/mileusna/useragent"
 
 	http "github.com/Carcraftz/fhttp"
+
 	tls "github.com/Carcraftz/utls"
-	screen "github.com/inancgumus/screen"
 )
 
 //var client http.Client
 
 func main() {
-	screen.Clear()
 	port := flag.String("port", "8082", "A port number (default 8082)")
 	flag.Parse()
 	fmt.Println("Hosting a TLS API on port " + *port)
@@ -39,55 +38,64 @@ func main() {
 	}
 }
 
-func handleReq(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+func handleReq(responseWriter http.ResponseWriter, request *http.Request) {
+	defer request.Body.Close()
 	// Ensure page URL header is provided
-	pageURL := r.Header.Get("Poptls-Url")
+	pageURL := request.Header.Get("Poptls-Url")
 	if pageURL == "" {
-		http.Error(w, "ERROR: No Page URL Provided", http.StatusBadRequest)
+		http.Error(responseWriter, "ERROR: No Page URL Provided", http.StatusBadRequest)
 		return
 	}
 	// Remove header to ignore later
-	r.Header.Del("Poptls-Url")
+	request.Header.Del("Poptls-Url")
 
 	// Ensure user agent header is provided
-	userAgent := r.Header.Get("User-Agent")
-	if userAgent == "" {
-		http.Error(w, "ERROR: No User Agent Provided", http.StatusBadRequest)
-		return
-	}
+	userAgent := request.Header.Get("User-Agent")
+	//if userAgent == "" {
+	//	http.Error(responseWriter, "ERROR: No User Agent Provided", http.StatusBadRequest)
+	//	return
+	//}
 
 	//Handle Proxy (http://host:port or http://user:pass@host:port)
-	proxy := r.Header.Get("Poptls-Proxy")
+	proxy := request.Header.Get("Poptls-Proxy")
 	if proxy != "" {
-		r.Header.Del("Poptls-Proxy")
+		request.Header.Del("Poptls-Proxy")
 	}
 	//handle redirects and timeouts
-	redirectVal := r.Header.Get("Poptls-Allowredirect")
+	redirectVal := request.Header.Get("Poptls-Allowredirect")
+
 	allowRedirect := true
 	if redirectVal != "" {
 		if redirectVal == "false" {
 			allowRedirect = false
 		}
 	}
+
 	if redirectVal != "" {
-		r.Header.Del("Poptls-Allowredirect")
+		request.Header.Del("Poptls-Allowredirect")
 	}
-	timeoutraw := r.Header.Get("Poptls-Timeout")
+	timeoutraw := request.Header.Get("Poptls-Timeout")
 	timeout, err := strconv.Atoi(timeoutraw)
 	if err != nil {
 		//default timeout of 6
 		timeout = 6
 	}
 	if timeout > 60 {
-		http.Error(w, "ERROR: Timeout cannot be longer than 60 seconds", http.StatusBadRequest)
+		http.Error(responseWriter, "ERROR: Timeout cannot be longer than 60 seconds", http.StatusBadRequest)
 		return
 	}
 	// Change JA3
 	var tlsClient tls.ClientHelloID
-	if strings.Contains(strings.ToLower(userAgent), "chrome") {
-		tlsClient = tls.HelloChrome_Auto
-	} else if strings.Contains(strings.ToLower(userAgent), "firefox") {
+	uaObj := ua.Parse(userAgent)
+	if uaObj.IsChrome() {
+		if strings.Contains(uaObj.Version, "100"){
+			tlsClient = tls.HelloChrome_100
+			fmt.Println("Using Chrome 100 TLS.")
+		}  else {
+			tlsClient = tls.HelloChrome_Auto
+		}
+	} else if uaObj.IsFirefox() {
+		fmt.Println("Using Firefox 99 TLS.")
 		tlsClient = tls.HelloFirefox_Auto
 	} else {
 		tlsClient = tls.HelloIOS_Auto
@@ -99,7 +107,7 @@ func handleReq(w http.ResponseWriter, r *http.Request) {
 
 	// Forward query params
 	var addedQuery string
-	for k, v := range r.URL.Query() {
+	for k, v := range request.URL.Query() {
 		addedQuery += "&" + k + "=" + v[0]
 	}
 
@@ -112,7 +120,7 @@ func handleReq(w http.ResponseWriter, r *http.Request) {
 			endpoint = pageURL + "?" + addedQuery[1:]
 		}
 	}
-	req, err := http.NewRequest(r.Method, ""+endpoint, r.Body)
+	req, err := http.NewRequest(request.Method, ""+endpoint, request.Body)
 	if err != nil {
 		panic(err)
 	}
@@ -134,23 +142,24 @@ func handleReq(w http.ResponseWriter, r *http.Request) {
 		"sec-ch-ua-platform",
 		"sec-ch-ua-platform-version",
 		"sec-ch-ua-model",
-		"upgrade-insecure-requests",
 		"user-agent",
 		"accept",
-		"sec-fetch-site",
-		"sec-fetch-mode",
-		"sec-fetch-user",
-		"sec-fetch-dest",
-		"referer",
-		"accept-encoding",
 		"accept-language",
+		"accept-encoding",
+		"upgrade-insecure-requests",
+		"sec-fetch-dest",
+		"sec-fetch-mode",
+		"sec-fetch-site",
+		"sec-fetch-user",
+		"referer",
 		"cookie",
+		"te",
 	}
 	headermap := make(map[string]string)
 	//TODO: REDUCE TIME COMPLEXITY (This code is very bad)
 	headerorderkey := []string{}
 	for _, key := range masterheaderorder {
-		for k, v := range r.Header {
+		for k, v := range request.Header {
 			lowercasekey := strings.ToLower(k)
 			if key == lowercasekey {
 				headermap[k] = v[0]
@@ -169,7 +178,7 @@ func handleReq(w http.ResponseWriter, r *http.Request) {
 	//ordering the pseudo headers and our normal headers
 	req.Header = http.Header{
 		http.HeaderOrderKey:  headerorderkey,
-		http.PHeaderOrderKey: {":method", ":authority", ":scheme", ":path"},
+		http.PHeaderOrderKey: {":method", ":path", ":authority", ":scheme"},
 	}
 	//set our Host header
 	u, err := url.Parse(endpoint)
@@ -177,17 +186,17 @@ func handleReq(w http.ResponseWriter, r *http.Request) {
 		panic(err)
 	}
 	//append our normal headers
-	for k := range r.Header {
+	for k := range request.Header {
 		if k != "Content-Length" && !strings.Contains(k, "Poptls") {
-			v := r.Header.Get(k)
+			v := request.Header.Get(k)
 			req.Header.Set(k, v)
 		}
 	}
 	req.Header.Set("Host", u.Host)
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Printf("[%s][%s][%s]\r\n", color.YellowString("%s", time.Now().Format("2012-11-01T22:08:41+00:00")), color.BlueString("%s", pageURL), color.RedString("Connection Failed"))
-		hj, ok := w.(http.Hijacker)
+		fmt.Printf("[%s][%s][%s][%s]\r\n", color.YellowString("%s", time.Now().Format("2012-11-01T22:08:41+00:00")), color.BlueString("%s", pageURL), color.RedString("Connection Failed"), err)
+		hj, ok := responseWriter.(http.Hijacker)
 		if !ok {
 			panic(err)
 		}
@@ -204,20 +213,15 @@ func handleReq(w http.ResponseWriter, r *http.Request) {
 
 	//req.Close = true
 
-	var re = regexp.MustCompile(`(domain|SameSite|Secure|path)(=)?(.+?;)`)  //cleaning up cookie vals
 	//forward response headers
 	for k, v := range resp.Header {
 		if k != "Content-Length" && k != "Content-Encoding" {
 			for _, kv := range v {
-				if k == "Set-Cookie"{
-					// httpx was giving me issues, for some reason this works, even though the regex doesn't really work
-					kv = re.ReplaceAllString(kv, ``)
-				}
-				w.Header().Add(strings.Title(k), kv)
+				responseWriter.Header().Add(k, kv)
 			}
 		}
 	}
-	w.WriteHeader(resp.StatusCode)
+	responseWriter.WriteHeader(resp.StatusCode)
 	var status string
 	if resp.StatusCode > 302 {
 		status = color.RedString("%s", resp.Status)
@@ -260,7 +264,7 @@ func handleReq(w http.ResponseWriter, r *http.Request) {
 	} else {
 		finalres = string(body)
 	}
-	if _, err := fmt.Fprint(w, finalres); err != nil {
+	if _, err := fmt.Fprint(responseWriter, finalres); err != nil {
 		log.Println("Error writing body:", err)
 	}
 }
